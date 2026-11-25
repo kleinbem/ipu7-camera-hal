@@ -1,0 +1,88 @@
+name: Build tests
+
+on:
+  push:
+
+  pull_request:
+
+permissions: {}
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        version: ["ipu7"]
+        os: ["ubuntu:24.04"]
+    runs-on: ubuntu-latest
+    container: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: intel/ipu7-camera-bins
+          ref: main
+          path: bins
+
+      - name: Install from intel/ipu7-camera-bins
+        run: |
+          cd "${GITHUB_WORKSPACE}/bins"
+
+          cat README.md | \
+            awk 'BEGIN { \
+                FS="/"; \
+              } \
+              /^```/ { \
+                getline; \
+                if ($1 == "# Runtime files") { \
+                  while ($1 != "```") { \
+                    print $0; \
+                    getline; \
+                  } \
+                } \
+              }' | \
+            sed 's,ipu7-camera-bins/,./,' | \
+            sh -x
+
+      - uses: actions/checkout@v4
+        with:
+          path: hal
+
+      - name: Install prerequisite packages
+        run: |
+          echo 'APT::Get::Always-Include-Phased-Updates True;' | tee -a /etc/apt/apt.conf
+          echo 'Acquire::http::User-Agent-Non-Interactive "true";' | tee -a /etc/apt/apt.conf
+          apt-get update -q
+          export TZ=Asia/Shanghai
+          echo "" | apt-get install -qy tzdata
+          echo "" | apt-get install git build-essential cmake libexpat-dev automake libtool rpm libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev libdrm-dev libva-dev libunwind-dev libdrm-dev libjsoncpp-dev --yes
+
+      - uses: actions/checkout@v4
+        with:
+          repository: intel/icamerasrc
+          ref: icamerasrc_slim_api
+          path: icamerasrc
+
+      - name: Build test for ${{ matrix.version }} on ${{ matrix.os }}
+        timeout-minutes: 10
+        run: |
+          cd "${GITHUB_WORKSPACE}/hal"
+
+          mkdir build && cd build
+          cmake -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_INSTALL_PREFIX=/usr \
+                -DCMAKE_INSTALL_LIBDIR=lib \
+                -DBUILD_CAMHAL_ADAPTOR=ON \
+                -DBUILD_CAMHAL_PLUGIN=ON \
+                -DIPU_VERSIONS="ipu7x;ipu75xa" \
+                -DUSE_STATIC_GRAPH=ON \
+                -DUSE_STATIC_GRAPH_AUTOGEN=ON \
+                ..
+          VERBOSE=1 make -j16
+          make install
+
+          cd "${GITHUB_WORKSPACE}/icamerasrc"
+          export CHROME_SLIM_CAMHAL=ON
+          ./autogen.sh
+          ./configure --prefix=/usr
+          make -j16
+          make rpm
+          make install
